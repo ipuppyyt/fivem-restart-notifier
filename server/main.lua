@@ -36,8 +36,19 @@ local function SendDiscordEmbed(embedData, attempt)
         ["Content-Type"] = "application/json"
     }
 
+    local mentionString = ""
+    if Config.discord.mentionRoles and #Config.discord.mentionRoles > 0 then
+        for _, roleId in ipairs(Config.discord.mentionRoles) do
+            mentionString = mentionString .. "<@&" .. roleId .. "> "
+        end
+    end
+
     local data = {
-        embeds = {embedData}
+        content = mentionString ~= "" and mentionString or nil,
+        embeds = {embedData},
+        allowed_mentions = {
+            parse = ["roles"]
+        }
     }
 
     PerformHttpRequest(url, function(err, text, headers)
