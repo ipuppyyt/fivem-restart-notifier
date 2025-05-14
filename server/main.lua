@@ -1,5 +1,11 @@
 local DISCORD_API = "https://discord.com/api/v10"
 
+-- Configuration validation
+if Config == nil or Config.discord == nil then
+    print("^1[ERROR]^0 Configuration not loaded properly")
+    return
+end
+
 if Config.discord.botToken == "" then
     print("^1[ERROR]^0 Discord bot token not configured in config.lua")
     return
@@ -10,33 +16,20 @@ if Config.discord.channelID == "" then
     return
 end
 
-
+-- Function to get server information
 local function GetServerInfo()
     return {
-        name = GetConvar("sv_hostname", "FiveM Server"):gsub('%^%d', ''),
+        name = (GetConvar("sv_hostname", "FiveM Server"):gsub('%^%d', '')), -- Remove color codes
         iconURL = GetConvar("sv_iconUrl", ""),
         maxPlayers = GetConvarInt("sv_maxClients", 32)
     }
 end
 
-
+-- Function to send Discord embed
 local function SendDiscordEmbed(embedData, attempt)
     attempt = attempt or 1
-    local maxAttempts = 3  -- Maximum retry attempts
+    local maxAttempts = 3
     
-    if not Config or not Config.discord then
-        print("^1[DISCORD BOT]^0 Configuration not loaded properly")
-        return false
-    end
-
-    if Config.discord.botToken == "" or Config.discord.channelID == "" then
-        if Config.debug then
-            print("^1[DISCORD BOT]^0 Missing bot token or channel ID in config")
-        end
-        return false
-    end
-
-
     local url = ("%s/channels/%s/messages"):format(DISCORD_API, Config.discord.channelID)
     local headers = {
         ["Authorization"] = "Bot " .. Config.discord.botToken,
@@ -47,12 +40,12 @@ local function SendDiscordEmbed(embedData, attempt)
         embeds = {embedData}
     }
 
-
     PerformHttpRequest(url, function(err, text, headers)
         if Config.debug then
             print(("^5[DISCORD BOT]^0 Attempt %d/%d - Status: %s"):format(attempt, maxAttempts, err or "unknown"))
         end
 
+        -- Rate limit handling
         if err == 429 then
             local retryAfter = tonumber(headers["retry-after"]) or 5
             if attempt >= maxAttempts then
@@ -66,6 +59,7 @@ local function SendDiscordEmbed(embedData, attempt)
             return
         end
 
+        -- Error handling
         if err ~= 200 and err ~= 204 then
             local errorMsg = "Unknown error"
             if text then
@@ -74,12 +68,9 @@ local function SendDiscordEmbed(embedData, attempt)
                     errorMsg = response.message
                 end
             end
+            print(("^1[DISCORD BOT]^0 Error sending embed (HTTP %s): %s"):format(err or "unknown", errorMsg))
             
-            print(("^1[DISCORD BOT]^0 Error sending embed (HTTP %s): %s"):format(
-                err or "unknown", 
-                errorMsg
-            ))
-            
+            -- Retry on server errors
             if err >= 500 and err < 600 and attempt < maxAttempts then
                 local retryDelay = math.min(2 ^ attempt, 30)
                 print(("^3[DISCORD BOT]^0 Server error - Retrying in %d seconds"):format(retryDelay))
@@ -89,36 +80,17 @@ local function SendDiscordEmbed(embedData, attempt)
             return
         end
 
+        -- Success
         if Config.debug then
             print("^2[DISCORD BOT]^0 Embed sent successfully")
-            
-            if Config.debugLevel == "verbose" then
-                print("^5[DEBUG]^0 Embed data:")
-                print(json.encode(embedData, {indent = true}))
-            end
         end
     end, 'POST', json.encode(data), headers)
 
     return true
 end
 
-
-local function AllResourcesStarted()
-    local resources = GetResources()
-    for _, resource in ipairs(resources) do
-        if GetResourceState(resource) ~= "started" then
-            return false
-        end
-    end
-    return true
-end
-
-
+-- Get bot avatar
 local function GetBotAvatar(callback)
-    if Config.discord.botToken == "" then
-        return callback(nil)
-    end
-    
     local url = DISCORD_API .. "/users/@me"
     local headers = {
         ["Authorization"] = "Bot " .. Config.discord.botToken,
@@ -128,72 +100,51 @@ local function GetBotAvatar(callback)
     PerformHttpRequest(url, function(err, text, headers)
         if err == 200 then
             local data = json.decode(text)
-            local avatarId = data.avatar
-            local botId = data.id
-            
-            if avatarId then
-                local avatarURL = string.format("https://cdn.discordapp.com/avatars/%s/%s.png", botId, avatarId)
-                callback(avatarURL)
-            else
-                callback(nil)
+            if data and data.avatar and data.id then
+                callback(string.format("https://cdn.discordapp.com/avatars/%s/%s.png", data.id, data.avatar))
+                return
             end
-        else
-            if Config.debug then
-                print(("^1[DISCORD BOT]^0 Error fetching bot info (HTTP %s): %s"):format(err, text))
-            end
-            callback(nil)
+        elseif Config.debug then
+            print(("^1[DISCORD BOT]^0 Error fetching bot info (HTTP %s): %s"):format(err, text))
         end
+        callback(nil)
     end, 'GET', "", headers)
 end
 
+-- Main thread
 Citizen.CreateThread(function()
-    Citizen.Wait(5000)
-
+    -- Wait a moment to ensure everything is ready
+    Citizen.Wait(3000)
+    
     if Config.debug then
-        print("^3[RESTART NOTIFIER]^0 Starting up...")
-    end
-
-    local attempts = 0
-    while not AllResourcesStarted() and attempts < 10 do
-        attempts = attempts + 1
-        if Config.debug then
-            print("^3[RESTART NOTIFIER]^0 Waiting for all resources to start... Attempt " .. attempts)
-        end
-        Citizen.Wait(10000)
+        print("^3[RESTART NOTIFIER]^0 Sending startup notification...")
     end
 
     local serverInfo = GetServerInfo()
-    local playerCount = GetNumPlayerIndices()
 
     GetBotAvatar(function(avatarURL)
+        local messageConfig = Config.message or {}
         local embed = {
-            title = Config.message.title,
-            description = string.format("%s is now online!", serverInfo.name),
-            color = Config.message.color,
-            image = {
-                url = Config.discord.bannerURL
-            },
+            title = messageConfig.title or "🚀 Server Restart Complete",
+            description = string.format("**%s**", messageConfig.onlineText),
+            color = messageConfig.color or 65280, -- Default green
             timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
             footer = {
                 text = "Server Restart Notification",
-                icon_url = avatarURL or Config.discord.iconURL
+                icon_url = avatarURL or (Config.discord.iconURL or "")
             }
         }
 
-        if serverInfo.iconURL ~= "" then
-            embed.thumbnail = {
-                url = serverInfo.iconURL
-            }
+        -- Add thumbnail if server icon exists or fallback icon is configured
+        if serverInfo.iconURL ~= "" or Config.discord.iconURL ~= "" then
+            embed.thumbnail = { url = serverInfo.iconURL ~= "" and serverInfo.iconURL or Config.discord.iconURL }
         end
 
-        local success = SendDiscordEmbed(embed)
-        
-        if Config.debug then
-            if success then
-                print("^2[RESTART NOTIFIER]^0 Server restart notification sent")
-            else
-                print("^1[RESTART NOTIFIER]^0 Failed to send server restart notification")
-            end
+        -- Add banner if configured
+        if Config.discord.bannerURL and Config.discord.bannerURL ~= "" then
+            embed.image = { url = Config.discord.bannerURL }
         end
+
+        SendDiscordEmbed(embed)
     end)
 end)
